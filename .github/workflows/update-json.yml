@@ -1,0 +1,73 @@
+name: Mettre à jour le JSON depuis Grist
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  update-json:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+
+      - name: Installer axios
+        run: npm install axios
+
+      - name: Récupérer le lien du JSON depuis Grist
+        id: get-json-link
+        run: |
+          node -e "
+            const axios = require('axios');
+            const url = '${{ secrets.GRIST_API_URL }}';
+            const token = '${{ secrets.GRIST_API_KEY }}';
+
+            axios.get(url, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            })
+            .then(response => {
+              const records = response.data.records;
+              const jsonRecords = records.filter(record =>
+                record.fields.Type?.toLowerCase() === 'json'
+              );
+              if (jsonRecords.length === 0) {
+                throw new Error('Aucune ligne de type JSON trouvée.');
+              }
+              jsonRecords.sort((a, b) => b.id - a.id);
+              const latest = jsonRecords[0];
+              const jsonUrl = latest.fields.Lien;
+              if (!jsonUrl) {
+                throw new Error('Aucun lien trouvé dans la colonne Lien.');
+              }
+              console.log(\`::set-output name=json_url::\${jsonUrl}\`);
+            })
+            .catch(error => {
+              console.error('Erreur :', error.message);
+              process.exit(1);
+            });
+          "
+
+      - name: Télécharger le JSON depuis Grist
+        run: |
+          JSON_URL="${{ steps.get-json-link.outputs.json_url }}"
+          curl -s -o cartes.json "$JSON_URL"
+          if ! jq empty cartes.json; then
+            echo "Le fichier JSON est invalide."
+            exit 1
+          fi
+
+      - name: Valider et pousser les modifications
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add cartes.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Mise à jour automatique du JSON depuis Grist $(date +'%Y-%m-%d %H:%M:%S')"
+            git push
+          fi
